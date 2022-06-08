@@ -17,6 +17,7 @@ export const CACHE_EVICT_METADATA = Symbol('CACHE_EVICT');
 
 @Injectable()
 export class HttpCacheInterceptor extends CacheInterceptor {
+  private readonly CACHE_EVICT_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
   protected trackBy(context: ExecutionContext): string {
     // 캐싱할 수 없는 경우
     if (!this.isRequestCacheable(context)) return undefined;
@@ -55,7 +56,7 @@ export class HttpCacheInterceptor extends CacheInterceptor {
     const reflector: Reflector = this.reflector;
     // POST, PATCH, PUT, DELETE 메소드에 대해 @CacheClearKeys() 에 의한 캐시 해제 처리
     const req = context.switchToHttp().getRequest<Request>();
-    if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) {
+    if (this.CACHE_EVICT_METHODS.includes(req.method)) {
       // 핸들러또는 클래스에 @CacheClearKeys() 데코레이터로 적용한 clear할 캐시키 목록 가져오기
       const clearCacheKeys =
         reflector.getAllAndMerge<string[]>(CACHE_EVICT_METADATA, [

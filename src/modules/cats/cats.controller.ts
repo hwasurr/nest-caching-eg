@@ -9,7 +9,7 @@ import {
   UseInterceptors,
   ValidationPipe,
 } from '@nestjs/common';
-import { HttpCacheInterceptor } from '../../core/httpcache.interceptor';
+import { HttpCacheInterceptor } from '../../core/httpcache.interceptor2';
 import { CatsService } from './cats.service';
 import { CreateCatDto, UpdateCatDto } from './dto/cats.dto';
 

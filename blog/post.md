@@ -293,18 +293,87 @@ Interceptor를 활용해 캐시를 생성하도록 구성하는 작업은 Contro
 
 유지보수 편의를 위한 좋은 설계는 높은 응집도를 가지고 낮은 결합도를 가지도록 하는 것입니다. 하나의 서비스 클래스는 해당하는 기능만을 수행하는 것이 바람직합니다.
 
-::Nestjs에서는 Interceptor를 이용해 AOP(Aspect Oriented Programming) 를 구성할 수 있습니다.::
+`CacheInterceptor`가 제공하는 캐싱 처리 기능을 Interceptor를 통해 따로 떼어내 구성하지 않았다면 해당 기능은 Service상에서 CacheManager에 직접 접근하여 처리될 수 있었을 것입니다. 캐싱 처리를 Interceptor를 통해 따로 떼어내어 구성하여 관심사의 분리를 만족했습니다. 당연히, 캐시 무효화 역시 그렇게 구성하지 않을 이유는 없습니다.
 
-캐싱 처리를 Interceptor를 통해 따로 떼어내어 구성했다면, 캐시 무효화 역시 그렇게 하지 못할 이유는 없습니다. Nestjs에 의해 제공되는 CacheInterceptor에 몇 가지 기능을 추가하여 확장한 `HttpCacheInterceptor`를 구성하며 자동적으로 캐시를 무효화 하도록 하는 방법을 알아봅니다.
-
-캐시 무효화 처리를 포함하는 새롭게 구성할 HttpCacheInterceptor의 요구사항을 다음과 같이 정리해 볼 수 있습니다.
+Nestjs에 의해 제공되는 `CacheInterceptor`에 몇 가지 기능을 추가하여 확장한 `HttpCacheInterceptor`를 구성하며 자동적으로 캐시를 무효화 하도록 하는 방법을 알아봅니다. `HttpCacheInterceptor`의 요구사항을 다음과 같이 정리해 볼 수 있습니다.
 
 - 기존 CacheInterceptor의 기능을 훼손하지 않는다.
 - POST(생성), PATCH(수정), PUT(덮어쓰기), DELETE(삭제) 요청시 연관된 캐시를 무효화 처리할 수 있어야 한다.
-- GET 요청 endpoint와 POST, PATCH, PUT, DELETE 요청 endpoint가 다를 수 있으므로, 삭제할 캐시 키를 개발자가 직접 작성할 수 있어야 한다.
-    - 이 경우 캐시를 제거할 key는 @CacheKey()와 @CacheTTL() 과 같이 `SetMetadata`를 통해 구성한 커스텀 메타데이터를 통해 명시하고, Interceptor에서 가져와 해당 키의 캐시를 무효화하도록 구성.
+- 캐시를 등록하는 GET 요청 엔드포인트와 캐시를 무효화해야하는 POST, PATCH, PUT, DELETE 요청 엔드포인트가 다를 수 있으므로, 삭제할 캐시 키를 개발자가 직접 작성할 수 있어야 한다. - 이 경우 캐시를 제거할 key는 @CacheKey()와 @CacheTTL() 과 같이 `SetMetadata`를 통해 구성한 커스텀 메타데이터를 통해 명시하고, Interceptor에서 가져와 해당 키의 캐시를 무효화하도록 구성.
 
-(CacheInterceptor 상속하는 HttpCacheInterceptor 구성)
+위 요구사항을 만족하는 HttpCacheInterceptor를 다음과 같이 구성할 수 있습니다.
+
+```ts
+// src/core/httpcache.interceptor.ts
+import {
+  CacheInterceptor,
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+} from '@nestjs/common';
+import { Request } from 'express';
+import { Cluster } from 'ioredis';
+import { Observable, tap } from 'rxjs';
+
+@Injectable()
+export class HttpCacheInterceptor extends CacheInterceptor {
+  private readonly CACHE_EVICT_METHODS = ['POST', 'PATCH', 'PUT', 'DELETE'];
+
+  async intercept(
+    context: ExecutionContext,
+    next: CallHandler<any>,
+  ): Promise<Observable<any>> {
+    const req = context.switchToHttp().getRequest<Request>();
+    if (this.CACHE_EVICT_METHODS.includes(req.method)) {
+      // 캐시 무효화 처리
+      return next.handle().pipe(
+        tap((resData) => {
+          this._clearCaches(req.originalUrl);
+        }),
+      );
+    }
+
+    // 기존 캐싱 처리
+    return super.intercept(context, next);
+  }
+
+  /**
+   * 받은 캐시키에 해당하는 캐시 데이터를 삭제합니다. 해당 캐시키가 포함되는 모든 key에 대해 삭제합니다.
+   * @param cacheKey 삭제할 캐시 키
+   */
+  private async _clearCaches(cacheKey: string): Promise<boolean> {
+    const client: Cluster = await this.cacheManager.store.getClient();
+    const redisNodes = client.nodes();
+    const _keys: string[][] = await Promise.all(
+      redisNodes.map((redis) => redis.keys(`*${cacheKey}*`)),
+    );
+    const keys = _keys.flat();
+    const result = await Promise.all(
+      keys.map((key) => this.cacheManager.del(key)),
+    ).catch((err) => {
+      console.error(`An error occurred during clear caches - ${cacheKey}`, err);
+      return false;
+    });
+    return !!result;
+  }
+}
+```
+
+캐시 무효화 메서드 _clearCaches에 대한 설명
+- ioredis 클라이언트로부터 클러스터노드들을 모두 가져온다
+- 노드들을 순회하며 입력받은 key에 해당하는 캐시를 모두 삭제한다
+
+intercept 메서드에 대한 설명
+- POST,PATCH,PUT,DELTE 요청시 캐시 무효화 작업을 진행한다
+- 기존 CacheInterceptor 작업을 그대로 실행한다
+
+요구사항 중 세번째, 캐시키가 다른 경우에 대한 처리를 추가해야 함.
+
+- SetMetadata 데코레이터 구성하기: @CacheEvict(), + 메타데이터 키 구성하기 (
+`export const CACHE_EVICT_METADATA = Symbol('CACHE_EVICT');`
+)
+- reflector로 메타데이터 가져오기
+- Controller, Router Method 모두에 적용할 수 있도록 reflector.getAllAndMerge() + context.getClass() + context.getHandler() 활용하기
 
 # 요약
 
