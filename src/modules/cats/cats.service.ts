@@ -1,7 +1,11 @@
 import { CACHE_MANAGER, Inject, Injectable } from '@nestjs/common';
 import { Cache } from 'cache-manager';
+import { createWriteStream } from 'fs';
+import { join } from 'path';
+import { cwd } from 'process';
+import { v4 as uuidV4 } from 'uuid';
 import catsJSON from '../../data/cats.json';
-import { CreateCatDto, UpdateCatDto } from './dto/cats.dto';
+import { CreateCatDto } from './dto/cats.dto';
 import { Cat } from './model/cats.model';
 
 @Injectable()
@@ -15,16 +19,19 @@ export class CatsService {
     return catsJSON.find((cat) => cat.id === id);
   }
 
-  public async create(dto: CreateCatDto): Promise<void> {
-    await this.cacheManager.del('/cats');
-    return;
-  }
-
-  public async update(id: Cat['id'], dto: UpdateCatDto): Promise<Cat> {
-    return;
-  }
-
-  public async delete(id: Cat['id']): Promise<Cat> {
-    return;
+  public async create(dto: CreateCatDto): Promise<Cat> {
+    const id = uuidV4();
+    const newCat = { id, ...dto };
+    const newJson = catsJSON.concat(newCat);
+    return new Promise((resolve, reject) => {
+      console.log();
+      const stream = createWriteStream(join(cwd(), '/src/data/cats.json'), {
+        autoClose: true,
+      });
+      stream.write(JSON.stringify(newJson, null, 2));
+      stream.close();
+      stream.on('finish', () => resolve(newCat));
+      stream.on('error', (err) => reject(err));
+    });
   }
 }
